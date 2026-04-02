@@ -1,0 +1,308 @@
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <SPI.h>
+
+// --- Pins ---
+#define TFT_CS   10
+#define TFT_DC    9
+#define TFT_RST   8
+#define JOY_X    A0
+#define JOY_BTN   2
+
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+// --- Screen (landscape) ---
+#define W  160
+#define H  128
+
+// --- Colors ---
+#define C_BG     ST77XX_BLACK
+#define C_FG     ST77XX_WHITE
+#define C_BALL   ST77XX_CYAN
+#define C_PLAYER ST77XX_GREEN
+#define C_BOT    ST77XX_RED
+#define C_NET    0x4208
+
+// --- Paddle ---
+#define PAD_W    28
+#define PAD_H     4
+#define PAD_SPD   3
+#define PLAYER_Y  (H - 8 - PAD_H)
+#define BOT_Y      8
+
+// --- Ball ---
+#define BALL_SIZE  4
+
+// --- Bot speed (easier) ---
+#define BOT_SPD  1
+
+// --- Game state ---
+float ballX, ballY, ballVX, ballVY;
+int playerX, botX;
+int playerScore, botScore;
+bool paused;
+unsigned long lastFrame;
+#define FRAME_MS 20
+
+void setup() {
+  pinMode(JOY_BTN, INPUT_PULLUP);
+  tft.initR(INITR_BLACKTAB);
+  tft.setRotation(1);
+  tft.fillScreen(C_BG);
+  randomSeed(analogRead(A2));
+  showTitle();
+}
+
+void loop() {
+  if (paused) {
+    if (digitalRead(JOY_BTN) == LOW) {
+      delay(250);
+      // Clear the middle area to erase "Press to serve" text
+      tft.fillRect(0, H/2 - 20, W, 40, C_BG);
+      drawNet();
+      drawPaddles();
+      resetBall();
+      paused = false;
+    }
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now - lastFrame < FRAME_MS) return;
+  lastFrame = now;
+
+  movePlayer();
+  moveBot();
+  moveBall();
+  checkScore();
+  drawFrame();
+}
+
+// ---- Screens ----
+void showTitle() {
+  tft.fillScreen(C_BG);
+
+  tft.setTextColor(ST77XX_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(44, 16);
+  tft.print("PONG");
+
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_GREEN);
+  tft.setCursor(28, 52);
+  tft.print("YOU  vs  BOT");
+
+  tft.setTextColor(C_FG);
+  tft.setCursor(16, 72);
+  tft.print("Joystick = move");
+  tft.setCursor(22, 86);
+  tft.print("First to 7 wins");
+
+  tft.setTextColor(ST77XX_YELLOW);
+  tft.setCursor(34, 108);
+  tft.print("Press button");
+
+  while (digitalRead(JOY_BTN) == HIGH) {}
+  delay(250);
+  startGame();
+}
+
+void showWinner(bool playerWon) {
+  tft.fillScreen(C_BG);
+
+  tft.setTextSize(2);
+  if (playerWon) {
+    tft.setTextColor(ST77XX_GREEN);
+    tft.setCursor(22, 36);
+    tft.print("YOU WIN!");
+  } else {
+    tft.setTextColor(ST77XX_RED);
+    tft.setCursor(22, 36);
+    tft.print("BOT WINS!");
+  }
+
+  tft.setTextSize(1);
+  tft.setTextColor(C_FG);
+  tft.setCursor(44, 68);
+  tft.print(playerScore);
+  tft.print("  -  ");
+  tft.print(botScore);
+
+  tft.setTextColor(ST77XX_YELLOW);
+  tft.setCursor(22, 96);
+  tft.print("Press to replay");
+
+  while (digitalRead(JOY_BTN) == HIGH) {}
+  delay(250);
+  startGame();
+}
+
+// ---- Init ----
+void startGame() {
+  playerScore = 0;
+  botScore = 0;
+  playerX = (W - PAD_W) / 2;
+  botX    = (W - PAD_W) / 2;
+  tft.fillScreen(C_BG);
+  drawNet();
+  drawScoreboard();
+  resetBall();
+  paused = false;
+  lastFrame = millis();
+}
+
+void resetBall() {
+  ballX = W / 2.0;
+  ballY = H / 2.0;
+  float angle = random(-35, 36) * (PI / 180.0);
+  float spd = 1.6;
+  ballVX =  spd * sin(angle);
+  ballVY =  spd;
+  lastFrame = millis();
+}
+
+// ---- Movement ----
+void movePlayer() {
+  int joy = analogRead(JOY_X) - 512;
+  tft.fillRect(playerX, PLAYER_Y, PAD_W, PAD_H, C_BG);
+  if (joy < -150) playerX -= PAD_SPD;
+  if (joy >  150) playerX += PAD_SPD;
+  playerX = constrain(playerX, 0, W - PAD_W);
+}
+
+void moveBot() {
+  tft.fillRect(botX, BOT_Y, PAD_W, PAD_H, C_BG);
+
+  int center = botX + PAD_W / 2;
+  int target  = (int)ballX;
+
+  // Bot only moves when ball is heading toward it (ballVY < 0)
+  // and only reacts with a delay (misses on purpose sometimes)
+  if (ballVY < 0) {
+    if (center < target - 6) botX += BOT_SPD;
+    else if (center > target + 6) botX -= BOT_SPD;
+  }
+
+  botX = constrain(botX, 0, W - PAD_W);
+}
+
+void moveBall() {
+  tft.fillRect((int)ballX, (int)ballY, BALL_SIZE, BALL_SIZE, C_BG);
+
+  int by = (int)ballY;
+  if (by <= H/2 && by + BALL_SIZE >= H/2 - 1) drawNet();
+
+  ballX += ballVX;
+  ballY += ballVY;
+
+  // Left / right wall bounce
+  if (ballX <= 0) {
+    ballX = 0;
+    ballVX = -ballVX;
+  }
+  if (ballX >= W - BALL_SIZE) {
+    ballX = W - BALL_SIZE;
+    ballVX = -ballVX;
+  }
+
+  // Player paddle collision (bottom)
+  if (ballVY > 0 &&
+      ballY + BALL_SIZE >= PLAYER_Y &&
+      ballY + BALL_SIZE <= PLAYER_Y + PAD_H + 4 &&
+      ballX + BALL_SIZE >= playerX &&
+      ballX <= playerX + PAD_W) {
+    ballY = PLAYER_Y - BALL_SIZE;
+    float hitPos = (ballX + BALL_SIZE / 2.0) - (playerX + PAD_W / 2.0);
+    float norm = hitPos / (PAD_W / 2.0);
+    float spd = 1.8 + abs(ballVY) * 0.08;
+    spd = min(spd, 3.5f);
+    float angle = norm * 45.0 * (PI / 180.0);
+    ballVX =  spd * sin(angle);
+    ballVY = -spd * cos(angle);
+  }
+
+  // Bot paddle collision (top)
+  if (ballVY < 0 &&
+      ballY <= BOT_Y + PAD_H &&
+      ballY >= BOT_Y - 4 &&
+      ballX + BALL_SIZE >= botX &&
+      ballX <= botX + PAD_W) {
+    ballY = BOT_Y + PAD_H;
+    float hitPos = (ballX + BALL_SIZE / 2.0) - (botX + PAD_W / 2.0);
+    float norm = hitPos / (PAD_W / 2.0);
+    float spd = 1.8 + abs(ballVY) * 0.08;
+    spd = min(spd, 3.5f);
+    float angle = norm * 45.0 * (PI / 180.0);
+    ballVX =  spd * sin(angle);
+    ballVY =  spd * cos(angle);
+  }
+}
+
+// ---- Scoring ----
+void checkScore() {
+  if (ballY > H) {
+    botScore++;
+    drawScoreboard();
+    if (botScore >= 7) { showWinner(false); return; }
+    paused = true;
+    tft.fillRect(0, H/2, W, H/2, ST77XX_RED);
+    delay(200);
+    tft.fillRect(0, H/2, W, H/2, C_BG);
+    drawNet();
+    drawPaddles();
+    showPointMsg("Bot scores!", ST77XX_RED);
+  }
+  if (ballY < 0) {
+    playerScore++;
+    drawScoreboard();
+    if (playerScore >= 7) { showWinner(true); return; }
+    paused = true;
+    tft.fillRect(0, 0, W, H/2, ST77XX_GREEN);
+    delay(200);
+    tft.fillRect(0, 0, W, H/2, C_BG);
+    drawNet();
+    drawPaddles();
+    showPointMsg("You score!", ST77XX_GREEN);
+  }
+}
+
+void showPointMsg(const char* msg, uint16_t color) {
+  tft.setTextColor(color);
+  tft.setTextSize(1);
+  int len = strlen(msg) * 6;
+  tft.setCursor((W - len) / 2, H / 2 - 8);
+  tft.print(msg);
+  tft.setTextColor(ST77XX_YELLOW);
+  tft.setCursor((W - 84) / 2, H / 2 + 4);
+  tft.print("Press to serve");
+}
+
+// ---- Draw ----
+void drawFrame() {
+  drawPaddles();
+  tft.fillRect((int)ballX, (int)ballY, BALL_SIZE, BALL_SIZE, C_BALL);
+}
+
+void drawPaddles() {
+  tft.fillRect(playerX, PLAYER_Y, PAD_W, PAD_H, C_PLAYER);
+  tft.fillRect(botX,    BOT_Y,    PAD_W, PAD_H, C_BOT);
+}
+
+void drawNet() {
+  for (int x = 0; x < W; x += 8) {
+    tft.fillRect(x, H / 2 - 1, 4, 2, C_NET);
+  }
+}
+
+void drawScoreboard() {
+  tft.fillRect(0, 0, W, 8, C_BG);
+  tft.setTextColor(ST77XX_RED);
+  tft.setTextSize(1);
+  tft.setCursor(4, 0);
+  tft.print("BOT:");
+  tft.print(botScore);
+  tft.setTextColor(ST77XX_GREEN);
+  tft.setCursor(W - 48, 0);
+  tft.print("YOU:");
+  tft.print(playerScore);
+}
